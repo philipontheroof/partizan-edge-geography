@@ -60,13 +60,18 @@
   <div class="topbar">
     <h1>Hex Edge Geography</h1>
     <div class="control">
-      <label for="diameter">지름</label>
-      <input id="diameter" type="number" min="1" max="16" step="1" value="8" />
+      <label for="radius">반지름</label>
+      <input id="radius" type="number" min="1" max="8" step="1" value="3" />
       <button id="applyRadius" class="primary">적용</button>
     </div>
     <div class="control">
       <button id="backBtn">← 이전 턴</button>
       <button id="forwardBtn">다음 턴 →</button>
+    </div>
+    <div class="control">
+      <button id="saveBtn">트리 저장</button>
+      <button id="loadBtn">트리 불러오기</button>
+      <input id="loadFile" type="file" accept=".json,application/json" hidden />
     </div>
     <button id="resetBtn" class="danger">리셋</button>
   </div>
@@ -108,7 +113,7 @@
   const NS = 'http://www.w3.org/2000/svg';
   const boardSvg = document.getElementById('board');
   const treeSvg = document.getElementById('tree');
-  const diameterInput = document.getElementById('diameter');
+  const radiusInput = document.getElementById('radius');
   const phasePill = document.getElementById('phasePill');
   const turnPill = document.getElementById('turnPill');
   const branchPill = document.getElementById('branchPill');
@@ -116,9 +121,12 @@
   const forwardBtn = document.getElementById('forwardBtn');
   const resetBtn = document.getElementById('resetBtn');
   const applyRadius = document.getElementById('applyRadius');
+  const saveBtn = document.getElementById('saveBtn');
+  const loadBtn = document.getElementById('loadBtn');
+  const loadFile = document.getElementById('loadFile');
   const moveList = document.getElementById('moveList');
 
-  let D = 8;
+  let R = 3;
   let vertices = [];
   let vertexMap = new Map();
   let baseEdges = new Map();
@@ -131,27 +139,19 @@
   const key = (q,r) => `${q},${r}`;
   const edgeKey = (a,b) => a < b ? `${a}|${b}` : `${b}|${a}`;
 
-  function makeHexGraph(diameter){
+  function makeHexGraph(radius){
     vertices = [];
     vertexMap = new Map();
     baseEdges = new Map();
 
-    const rad = diameter / 2;
-    const odd = diameter % 2 === 1;
-    const cx = odd ? 0.5 : 0;
-    const cy = odd ? -0.5 : 0;
-    const cz = 0;
-    const bound = Math.ceil(rad) + 1;
-
-    for(let q=-bound;q<=bound;q++){
-      for(let r=-bound;r<=bound;r++){
-        const x=q, y=-q-r, z=r;
-        const dist=Math.max(Math.abs(x-cx),Math.abs(y-cy),Math.abs(z-cz));
-        if(dist <= rad + 1e-9){
-          const id=key(q,r);
-          const v={id,q,r};
-          vertices.push(v); vertexMap.set(id,v);
-        }
+    for(let q=-radius;q<=radius;q++){
+      const r1=Math.max(-radius,-q-radius);
+      const r2=Math.min(radius,-q+radius);
+      for(let r=r1;r<=r2;r++){
+        const id=key(q,r);
+        const v={id,q,r};
+        vertices.push(v);
+        vertexMap.set(id,v);
       }
     }
     for(const v of vertices){
@@ -186,9 +186,9 @@
   }
 
   function resetGame(){
-    D = Math.max(1, Math.min(16, parseInt(diameterInput.value,10)||8));
-    diameterInput.value = D;
-    makeHexGraph(D);
+    R = Math.max(1, Math.min(8, parseInt(radiusInput.value,10)||3));
+    radiusInput.value = R;
+    makeHexGraph(R);
     nodeCounter = 0;
     preferredChild.clear();
     root = makeNode(newState());
@@ -470,12 +470,96 @@
     }
   }
 
-  function renderAll(){ renderStatus(); renderBoard(); renderTree(); renderMoveList(); }
+  function serializeNode(node){
+    return {
+      id: node.id,
+      state: {
+        ...node.state,
+        removed: [...node.state.removed]
+      },
+      move: node.move,
+      children: node.children.map(serializeNode)
+    };
+  }
+
+  function saveTree(){
+    const payload = {
+      format: 'partizan-edge-geography-tree',
+      version: 1,
+      radius: R,
+      nodeCounter,
+      currentId: current.id,
+      preferredChild: [...preferredChild.entries()],
+      root: serializeNode(root)
+    };
+    const blob = new Blob([JSON.stringify(payload,null,2)], {type:'application/json'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `partizan-edge-geography-r${R}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  function restoreNode(raw,parent,nodeMap){
+    if(!raw || !raw.state || !Number.isInteger(raw.id)) throw new Error('잘못된 트리 데이터');
+    const state = {
+      ...raw.state,
+      removed: new Set(Array.isArray(raw.state.removed) ? raw.state.removed : [])
+    };
+    if(state.p1!==null && !vertexMap.has(state.p1)) throw new Error('현재 보드에 없는 P1 위치');
+    if(state.p2!==null && !vertexMap.has(state.p2)) throw new Error('현재 보드에 없는 P2 위치');
+    for(const e of state.removed) if(!baseEdges.has(e)) throw new Error('현재 보드에 없는 edge 정보');
+    const node = {id:raw.id,state,parent,move:raw.move??null,children:[]};
+    nodeMap.set(node.id,node);
+    node.children = (Array.isArray(raw.children)?raw.children:[]).map(ch=>restoreNode(ch,node,nodeMap));
+    return node;
+  }
+
+  async function loadTreeFile(file){
+    const text = await file.text();
+    const data = JSON.parse(text);
+    if(data.format!=='partizan-edge-geography-tree' || data.version!==1) throw new Error('지원하지 않는 저장 파일');
+    if(!Number.isInteger(data.radius) || data.radius<1 || data.radius>8) throw new Error('잘못된 반지름');
+
+    R=data.radius;
+    radiusInput.value=R;
+    makeHexGraph(R);
+
+    const nodeMap=new Map();
+    root=restoreNode(data.root,null,nodeMap);
+    current=nodeMap.get(data.currentId) || root;
+    preferredChild=new Map(
+      Array.isArray(data.preferredChild)
+        ? data.preferredChild.filter(([a,b])=>nodeMap.has(a)&&nodeMap.has(b))
+        : []
+    );
+    const maxId=Math.max(...nodeMap.keys());
+    nodeCounter=Math.max(Number.isInteger(data.nodeCounter)?data.nodeCounter:0,maxId+1);
+    renderAll();
+  }
+
+    function renderAll(){ renderStatus(); renderBoard(); renderTree(); renderMoveList(); }
 
   backBtn.addEventListener('click',goBack);
   forwardBtn.addEventListener('click',goForward);
   resetBtn.addEventListener('click',resetGame);
   applyRadius.addEventListener('click',resetGame);
+  saveBtn.addEventListener('click',saveTree);
+  loadBtn.addEventListener('click',()=>loadFile.click());
+  loadFile.addEventListener('change',async()=>{
+    const file=loadFile.files?.[0];
+    if(!file) return;
+    try{
+      await loadTreeFile(file);
+    }catch(err){
+      alert('불러오기 실패: '+(err?.message||err));
+    }finally{
+      loadFile.value='';
+    }
+  });
   window.addEventListener('resize',()=>{renderBoard();renderTree()});
   document.addEventListener('keydown',(e)=>{
     if(e.key==='ArrowLeft') goBack();
