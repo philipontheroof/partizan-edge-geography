@@ -73,6 +73,13 @@
       </select>
     </div>
     <div class="control">
+      <label for="topology">경계</label>
+      <select id="topology">
+        <option value="open">Open · 열린 경계</option>
+        <option value="periodic">Periodic · 주기적 경계</option>
+      </select>
+    </div>
+    <div class="control">
       <button id="backBtn">← 이전 턴</button>
       <button id="forwardBtn">다음 턴 →</button>
     </div>
@@ -124,6 +131,7 @@
   const treeSvg = document.getElementById('tree');
   const radiusInput = document.getElementById('radius');
   const ruleVersionSelect = document.getElementById('ruleVersion');
+  const topologySelect = document.getElementById('topology');
   const ruleSummary = document.getElementById('ruleSummary');
   const phasePill = document.getElementById('phasePill');
   const turnPill = document.getElementById('turnPill');
@@ -150,11 +158,26 @@
     }
   };
 
+  const TOPOLOGIES = {
+    open: {
+      label: 'Open · 열린 경계',
+      summary: '열린 경계: 바깥으로 나가는 edge는 없으며 경계 vertex의 degree가 작습니다.'
+    },
+    periodic: {
+      label: 'Periodic · 주기적 경계',
+      summary: '주기적 경계: 반대편 경계를 이어 모든 vertex가 degree 6이 됩니다. 주변의 흐린 6개 보드는 같은 격자의 주기적 복사본입니다.'
+    }
+  };
+
   let R = 3;
   let ruleVersion = 'v1';
+  let topology = 'open';
   let vertices = [];
   let vertexMap = new Map();
   let baseEdges = new Map();
+  let adjacency = new Map();
+  let edgeGeometry = new Map();
+  let periodData = null;
   let nodeCounter = 0;
   let root = null;
   let current = null;
@@ -164,10 +187,52 @@
   const key = (q,r) => `${q},${r}`;
   const edgeKey = (a,b) => a < b ? `${a}|${b}` : `${b}|${a}`;
 
+  function insideCentralHex(q,r){
+    return vertexMap.has(key(q,r));
+  }
+
+  function makePeriodData(radius){
+    const t1={q:2*radius+1,r:-radius};
+    const t2={q:radius,r:radius+1};
+    const t3={q:t1.q-t2.q,r:t1.r-t2.r};
+    return {
+      t1,t2,t3,
+      shifts:[
+        {q:0,r:0,ghost:false},
+        {q:t1.q,r:t1.r,ghost:true},
+        {q:-t1.q,r:-t1.r,ghost:true},
+        {q:t2.q,r:t2.r,ghost:true},
+        {q:-t2.q,r:-t2.r,ghost:true},
+        {q:t3.q,r:t3.r,ghost:true},
+        {q:-t3.q,r:-t3.r,ghost:true}
+      ]
+    };
+  }
+
+  function canonicalPeriodic(q,r){
+    const direct=key(q,r);
+    if(vertexMap.has(direct)) return {id:direct,shiftQ:0,shiftR:0};
+
+    const {t1,t2}=periodData;
+    for(let a=-2;a<=2;a++){
+      for(let b=-2;b<=2;b++){
+        const sq=a*t1.q+b*t2.q;
+        const sr=a*t1.r+b*t2.r;
+        const candidate=key(q-sq,r-sr);
+        if(vertexMap.has(candidate)){
+          return {id:candidate,shiftQ:sq,shiftR:sr};
+        }
+      }
+    }
+    return null;
+  }
+
   function makeHexGraph(radius){
     vertices = [];
     vertexMap = new Map();
     baseEdges = new Map();
+    adjacency = new Map();
+    edgeGeometry = new Map();
 
     for(let q=-radius;q<=radius;q++){
       const r1=Math.max(-radius,-q-radius);
@@ -177,16 +242,38 @@
         const v={id,q,r};
         vertices.push(v);
         vertexMap.set(id,v);
+        adjacency.set(id,[]);
       }
     }
+
+    periodData=makePeriodData(radius);
+
     for(const v of vertices){
       for(const [dq,dr] of dirs){
-        const n=key(v.q+dq,v.r+dr);
-        if(vertexMap.has(n)){
-          const e=edgeKey(v.id,n);
-          if(!baseEdges.has(e)) baseEdges.set(e,[v.id,n]);
+        const nq=v.q+dq, nr=v.r+dr;
+        let target=null;
+
+        if(topology==='open'){
+          const nid=key(nq,nr);
+          if(vertexMap.has(nid)) target={id:nid};
+        } else {
+          target=canonicalPeriodic(nq,nr);
+        }
+        if(!target || target.id===v.id) continue;
+
+        const e=edgeKey(v.id,target.id);
+        if(!baseEdges.has(e)){
+          baseEdges.set(e,[v.id,target.id]);
+          // Keep one ordinary unit lattice segment as the geometric representative.
+          // Translating this segment by the period lattice draws the ghost copies.
+          edgeGeometry.set(e,{q1:v.q,r1:v.r,q2:nq,r2:nr});
         }
       }
+    }
+
+    for(const [eid,[a,b]] of baseEdges){
+      adjacency.get(a).push({id:b,eid});
+      adjacency.get(b).push({id:a,eid});
     }
   }
 
@@ -214,7 +301,9 @@
     R = Math.max(1, Math.min(8, parseInt(radiusInput.value,10)||3));
     radiusInput.value = R;
     ruleVersion = RULES[ruleVersionSelect.value] ? ruleVersionSelect.value : 'v1';
+    topology = TOPOLOGIES[topologySelect.value] ? topologySelect.value : 'open';
     ruleVersionSelect.value = ruleVersion;
+    topologySelect.value = topology;
     makeHexGraph(R);
     nodeCounter = 0;
     preferredChild.clear();
@@ -226,14 +315,8 @@
   function availableNeighbors(state, vertexId){
     if(!vertexId) return [];
     const out=[];
-    const v=vertexMap.get(vertexId);
-    if(!v) return out;
-    for(const [dq,dr] of dirs){
-      const n=key(v.q+dq,v.r+dr);
-      if(vertexMap.has(n)){
-        const e=edgeKey(vertexId,n);
-        if(baseEdges.has(e) && !state.removed.has(e)) out.push(n);
-      }
+    for(const n of (adjacency.get(vertexId)||[])){
+      if(!state.removed.has(n.eid)) out.push(n.id);
     }
     return out;
   }
@@ -305,14 +388,37 @@
     renderAll();
   }
 
+  function displayShifts(){
+    return topology==='periodic' ? periodData.shifts : [{q:0,r:0,ghost:false}];
+  }
+
+  function axialRawXY(q,r){
+    return {
+      x:Math.sqrt(3)*(q+r/2),
+      y:1.5*r
+    };
+  }
+
   function boardMetrics(){
     const rect=boardSvg.getBoundingClientRect();
     const w=Math.max(300,rect.width), h=Math.max(420,rect.height);
-    const pad=34;
-    const raw=vertices.map(v=>({
-      x:Math.sqrt(3)*(v.q+v.r/2),
-      y:1.5*v.r
-    }));
+    const pad=28;
+    const raw=[];
+
+    for(const shift of displayShifts()){
+      for(const v of vertices){
+        raw.push(axialRawXY(v.q+shift.q,v.r+shift.r));
+      }
+    }
+    // Include edge endpoints too, because wrap edges extend one lattice step
+    // from one copy into a neighboring copy.
+    for(const shift of displayShifts()){
+      for(const g of edgeGeometry.values()){
+        raw.push(axialRawXY(g.q1+shift.q,g.r1+shift.r));
+        raw.push(axialRawXY(g.q2+shift.q,g.r2+shift.r));
+      }
+    }
+
     const minX=Math.min(...raw.map(p=>p.x)), maxX=Math.max(...raw.map(p=>p.x));
     const minY=Math.min(...raw.map(p=>p.y)), maxY=Math.max(...raw.map(p=>p.y));
     const spanX=Math.max(1,maxX-minX), spanY=Math.max(1,maxY-minY);
@@ -320,12 +426,16 @@
     return {w,h,spacing,pad,minX,maxX,minY,maxY};
   }
 
+  function coordToXYRaw(q,r,m){
+    const raw=axialRawXY(q,r);
+    return {
+      x:m.pad+(raw.x-m.minX)*m.spacing,
+      y:m.pad+(raw.y-m.minY)*m.spacing
+    };
+  }
+
   function coordToXY(v,m){
-    const rx=Math.sqrt(3)*(v.q+v.r/2);
-    const ry=1.5*v.r;
-    const x=m.pad+(rx-m.minX)*m.spacing;
-    const y=m.pad+(ry-m.minY)*m.spacing;
-    return {x,y};
+    return coordToXYRaw(v.q,v.r,m);
   }
 
   function svgEl(tag,attrs={}){
@@ -342,22 +452,68 @@
     const activeFrom = s.setupStep===2 && !s.winner ? (s.turn===1?s.p1:s.p2) : null;
     const legal = new Set(activeFrom ? availableNeighbors(s,activeFrom) : []);
     const activeColor = s.turn===1 ? '#ff6b6b' : '#4dabf7';
+    const activeVertex = activeFrom ? vertexMap.get(activeFrom) : null;
+    const shifts=displayShifts();
 
-    for(const [eid,[a,b]] of baseEdges){
-      const va=vertexMap.get(a), vb=vertexMap.get(b);
-      const pa=coordToXY(va,m), pb=coordToXY(vb,m);
-      const removed=s.removed.has(eid);
-      const hot = !removed && activeFrom && ((a===activeFrom&&legal.has(b))||(b===activeFrom&&legal.has(a)));
+    // Draw edges from the translated lattice representatives. In periodic mode
+    // a wrap edge is therefore a short ordinary lattice edge into a ghost copy,
+    // never a long chord across the central hexagon.
+    const edgeDraws=[];
+    for(const shift of shifts){
+      for(const [eid,[a,b]] of baseEdges){
+        const g=edgeGeometry.get(eid);
+        if(!g) continue;
+        const q1=g.q1+shift.q, r1=g.r1+shift.r;
+        const q2=g.q2+shift.q, r2=g.r2+shift.r;
+        const touchesCentral=insideCentralHex(q1,r1)||insideCentralHex(q2,r2);
+        edgeDraws.push({shift,eid,a,b,q1,r1,q2,r2,touchesCentral});
+      }
+    }
+    edgeDraws.sort((x,y)=>Number(x.touchesCentral)-Number(y.touchesCentral));
+
+    for(const d of edgeDraws){
+      const p1=coordToXYRaw(d.q1,d.r1,m), p2=coordToXYRaw(d.q2,d.r2,m);
+      const removed=s.removed.has(d.eid);
+      const hot=!removed && activeFrom && (d.a===activeFrom || d.b===activeFrom);
+      const central=d.touchesCentral;
       const line=svgEl('line',{
-        x1:pa.x,y1:pa.y,x2:pb.x,y2:pb.y,
-        stroke: removed?'#252a36':(hot?activeColor:'#4a556b'),
-        'stroke-width': hot?4:2,
+        x1:p1.x,y1:p1.y,x2:p2.x,y2:p2.y,
+        stroke:removed?'#252a36':(hot?activeColor:'#4a556b'),
+        'stroke-width':hot&&central?4:(central?2:1.5),
         'stroke-linecap':'round',
-        opacity: removed?0.13:0.9
+        opacity:removed?(central?0.11:0.035):(central?0.9:0.16)
       });
       boardSvg.appendChild(line);
     }
 
+    // Ghost vertices first. A ghost vertex that is the geometrically adjacent
+    // representation of a legal wrap move can be clicked directly.
+    if(topology==='periodic'){
+      for(const shift of shifts.filter(s=>s.ghost)){
+        for(const v of vertices){
+          const q=v.q+shift.q, r=v.r+shift.r;
+          const p=coordToXYRaw(q,r,m);
+          let ghostLegal=false;
+          if(activeVertex && legal.has(v.id)){
+            const dq=q-activeVertex.q, dr=r-activeVertex.r;
+            ghostLegal=dirs.some(([x,y])=>x===dq&&y===dr);
+          }
+          const g=svgEl('g',{style:ghostLegal?'cursor:pointer':'pointer-events:none'});
+          const rr=Math.max(2.5,Math.min(6,m.spacing*.12));
+          g.appendChild(svgEl('circle',{
+            cx:p.x,cy:p.y,r:ghostLegal?rr*1.25:rr,
+            fill:ghostLegal?'#27365d':'#172033',
+            stroke:ghostLegal?activeColor:'#6b7890',
+            'stroke-width':ghostLegal?2:1,
+            opacity:ghostLegal?0.9:0.22
+          }));
+          if(ghostLegal) g.addEventListener('click',()=>handleVertexClick(v.id));
+          boardSvg.appendChild(g);
+        }
+      }
+    }
+
+    // Central playable fundamental domain.
     for(const v of vertices){
       const p=coordToXY(v,m);
       let fill='#172033', stroke='#6b7890', r=Math.max(5,Math.min(10,m.spacing*.15));
@@ -383,8 +539,8 @@
       } else {
         if(isP1){fill='#ff6b6b';stroke='#ffd1d1'}
         else if(isP2){fill='#4dabf7';stroke='#d8efff'}
-        const c=svgEl('circle',{cx:p.x,cy:p.y,r,fill,stroke,'stroke-width':2});
-        g.appendChild(c);
+        const circle=svgEl('circle',{cx:p.x,cy:p.y,r,fill,stroke,'stroke-width':2});
+        g.appendChild(circle);
       }
 
       g.addEventListener('click',()=>handleVertexClick(v.id));
@@ -394,7 +550,7 @@
 
   function renderStatus(){
     const s=current.state;
-    ruleSummary.textContent = RULES[ruleVersion].summary;
+    ruleSummary.textContent = RULES[ruleVersion].summary + ' ' + TOPOLOGIES[topology].summary;
     if(s.winner){
       phasePill.textContent='게임 종료';
       turnPill.innerHTML=`<strong class="p${s.winner}">P${s.winner} 승리</strong> · ${s.reason}`;
@@ -513,9 +669,10 @@
   function saveTree(){
     const payload = {
       format: 'partizan-edge-geography-tree',
-      version: 2,
+      version: 3,
       radius: R,
       ruleVersion,
+      topology,
       nodeCounter,
       currentId: current.id,
       preferredChild: [...preferredChild.entries()],
@@ -525,7 +682,7 @@
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `partizan-edge-geography-r${R}.json`;
+    a.download = `partizan-edge-geography-r${R}-${topology}.json`;
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -550,13 +707,15 @@
   async function loadTreeFile(file){
     const text = await file.text();
     const data = JSON.parse(text);
-    if(data.format!=='partizan-edge-geography-tree' || ![1,2].includes(data.version)) throw new Error('지원하지 않는 저장 파일');
+    if(data.format!=='partizan-edge-geography-tree' || ![1,2,3].includes(data.version)) throw new Error('지원하지 않는 저장 파일');
     if(!Number.isInteger(data.radius) || data.radius<1 || data.radius>8) throw new Error('잘못된 반지름');
 
     R=data.radius;
     ruleVersion = data.version>=2 && RULES[data.ruleVersion] ? data.ruleVersion : 'v1';
+    topology = data.version>=3 && TOPOLOGIES[data.topology] ? data.topology : 'open';
     radiusInput.value=R;
     ruleVersionSelect.value=ruleVersion;
+    topologySelect.value=topology;
     makeHexGraph(R);
 
     const nodeMap=new Map();
@@ -579,6 +738,7 @@
   resetBtn.addEventListener('click',resetGame);
   applyRadius.addEventListener('click',resetGame);
   ruleVersionSelect.addEventListener('change',resetGame);
+  topologySelect.addEventListener('change',resetGame);
   saveBtn.addEventListener('click',saveTree);
   loadBtn.addEventListener('click',()=>loadFile.click());
   loadFile.addEventListener('change',async()=>{
