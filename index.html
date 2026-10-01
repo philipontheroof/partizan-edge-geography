@@ -38,7 +38,7 @@
   .p1{color:var(--p1)} .p2{color:var(--p2)}
   .layout{display:grid;grid-template-columns:minmax(0,1fr) 270px;gap:14px}
   .boardCard,.sideCard,.treeCard{background:var(--panel);border:1px solid #232a3a;border-radius:14px;overflow:hidden}
-  .boardWrap{position:relative;width:100%;aspect-ratio:1/1;min-height:0;background:#0b0e15}
+  .boardWrap{position:relative;width:100%;aspect-ratio:2/1.7320508075688772;min-height:0;background:#0b0e15}
   #board{display:block;width:100%;height:100%;touch-action:none}
   .sideCard{padding:14px}
   .sideCard h2,.treeCard h2{font-size:15px;margin:0 0 10px}
@@ -176,6 +176,7 @@
   let vertexMap = new Map();
   let baseEdges = new Map();
   let adjacency = new Map();
+  let latticeMoves = new Map();
   let edgeGeometry = new Map();
   let periodData = null;
   let nodeCounter = 0;
@@ -221,6 +222,7 @@
     vertexMap = new Map();
     baseEdges = new Map();
     adjacency = new Map();
+    latticeMoves = new Map();
     edgeGeometry = new Map();
 
     for(let q=-radius;q<=radius;q++){
@@ -232,6 +234,7 @@
         vertices.push(v);
         vertexMap.set(id,v);
         adjacency.set(id,[]);
+        latticeMoves.set(id,[]);
       }
     }
 
@@ -251,10 +254,11 @@
         if(!target || target.id===v.id) continue;
 
         const e=edgeKey(v.id,target.id);
+        latticeMoves.get(v.id).push({id:target.id,eid:e,dq,dr});
         if(!baseEdges.has(e)){
           baseEdges.set(e,[v.id,target.id]);
-          // Keep one ordinary unit lattice segment as the geometric representative.
-          // Translating this segment by the period lattice draws the ghost copies.
+          // One unit lattice representative; active wrap moves are overlaid
+          // separately from the directed latticeMoves table.
           edgeGeometry.set(e,{q1:v.q,r1:v.r,q2:nq,r2:nr});
         }
       }
@@ -422,60 +426,54 @@
     return Math.hypot(p.x,p.y);
   }
 
-  function tileCircumradiusRaw(){
-    return periodLengthRaw()/Math.sqrt(3);
-  }
-
-  function tileOrientation(){
-    const p=axialRawXY(periodData.t1.q,periodData.t1.r);
-    return Math.atan2(p.y,p.x)+Math.PI/6;
-  }
-
   function tilePolygonRaw(shiftQ,shiftR){
-    const center=axialRawXY(shiftQ,shiftR);
-    const radius=tileCircumradiusRaw();
-    const angle0=tileOrientation();
-    const pts=[];
-    for(let k=0;k<6;k++){
-      const a=angle0+k*Math.PI/3;
-      pts.push({x:center.x+radius*Math.cos(a),y:center.y+radius*Math.sin(a)});
-    }
-    return pts;
+    const h=R+0.5;
+    const axialCorners=[
+      {q:h,r:0},
+      {q:0,r:h},
+      {q:-h,r:h},
+      {q:-h,r:0},
+      {q:0,r:-h},
+      {q:h,r:-h}
+    ];
+    return axialCorners.map(p=>axialRawXY(p.q+shiftQ,p.r+shiftR));
   }
 
   function boardMetrics(){
     const rect=boardSvg.getBoundingClientRect();
-    const side=Math.max(300,Math.min(rect.width||620,rect.height||rect.width||620));
-    const w=side,h=side;
-    const padPx=18;
+    const w=Math.max(320,rect.width||760);
+    const h=Math.max(260,rect.height||w*Math.sqrt(3)/2);
 
-    let minX,maxX,minY,maxY;
     if(topology==='periodic'){
-      // Zoom is determined only by the centers of the central board and the
-      // six immediately adjacent copies. Ring 2 is still drawn, but clipped.
+      // Fit the centers of the center tile + six nearest copies, with only
+      // a small margin. Ring 2 remains visible where it enters the viewport.
       const centers=periodicTiles(1).map(t=>axialRawXY(t.q,t.r));
-      minX=Math.min(...centers.map(p=>p.x));
-      maxX=Math.max(...centers.map(p=>p.x));
-      minY=Math.min(...centers.map(p=>p.y));
-      maxY=Math.max(...centers.map(p=>p.y));
-      const margin=periodLengthRaw()*0.16;
-      minX-=margin; maxX+=margin; minY-=margin; maxY+=margin;
-    }else{
-      const poly=tilePolygonRaw(0,0);
-      minX=Math.min(...poly.map(p=>p.x));
-      maxX=Math.max(...poly.map(p=>p.x));
-      minY=Math.min(...poly.map(p=>p.y));
-      maxY=Math.max(...poly.map(p=>p.y));
-      const margin=tileCircumradiusRaw()*0.10;
-      minX-=margin; maxX+=margin; minY-=margin; maxY+=margin;
+      const cxMin=Math.min(...centers.map(p=>p.x));
+      const cxMax=Math.max(...centers.map(p=>p.x));
+      const cyMin=Math.min(...centers.map(p=>p.y));
+      const cyMax=Math.max(...centers.map(p=>p.y));
+      const margin=periodLengthRaw()*0.065;
+      const minX=cxMin-margin, maxX=cxMax+margin;
+      const minY=cyMin-margin, maxY=cyMax+margin;
+      const spanX=maxX-minX, spanY=maxY-minY;
+
+      // Preserve the requested 2:sqrt(3) viewport while fitting all 7 centers.
+      const scale=Math.min(w/spanX,h/spanY);
+      const drawW=spanX*scale, drawH=spanY*scale;
+      const offsetX=(w-drawW)/2-minX*scale;
+      const offsetY=(h-drawH)/2-minY*scale;
+      return {w,h,spacing:scale,offsetX,offsetY};
     }
 
-    const spanX=Math.max(1,maxX-minX), spanY=Math.max(1,maxY-minY);
-    const spacing=Math.min((w-2*padPx)/spanX,(h-2*padPx)/spanY);
-    const drawW=spanX*spacing, drawH=spanY*spacing;
-    const offsetX=(w-drawW)/2-minX*spacing;
-    const offsetY=(h-drawH)/2-minY*spacing;
-    return {w,h,spacing,offsetX,offsetY};
+    const poly=tilePolygonRaw(0,0);
+    const minX=Math.min(...poly.map(p=>p.x)), maxX=Math.max(...poly.map(p=>p.x));
+    const minY=Math.min(...poly.map(p=>p.y)), maxY=Math.max(...poly.map(p=>p.y));
+    const margin=(maxX-minX)*0.06;
+    const spanX=(maxX-minX)+2*margin, spanY=(maxY-minY)+2*margin;
+    const scale=Math.min(w/spanX,h/spanY);
+    const offsetX=(w-(maxX-minX)*scale)/2-minX*scale;
+    const offsetY=(h-(maxY-minY)*scale)/2-minY*scale;
+    return {w,h,spacing:scale,offsetX,offsetY};
   }
 
   function rawToXY(raw,m){
@@ -519,19 +517,46 @@
     return el;
   }
 
+  function renderTokenAt(g,p,r,isP1,isP2,opacity,outlineOpacity=1){
+    if(isP1&&isP2){
+      const left=svgEl('path',{
+        d:`M ${p.x} ${p.y-r} A ${r} ${r} 0 0 0 ${p.x} ${p.y+r} L ${p.x} ${p.y-r} Z`,
+        fill:'#ff6b6b',opacity
+      });
+      const right=svgEl('path',{
+        d:`M ${p.x} ${p.y-r} A ${r} ${r} 0 0 1 ${p.x} ${p.y+r} L ${p.x} ${p.y-r} Z`,
+        fill:'#4dabf7',opacity
+      });
+      const outline=svgEl('circle',{
+        cx:p.x,cy:p.y,r,fill:'none',stroke:'#ffffff',
+        'stroke-width':2,opacity:outlineOpacity
+      });
+      g.appendChild(left); g.appendChild(right); g.appendChild(outline);
+    }else{
+      const fill=isP1?'#ff6b6b':'#4dabf7';
+      const stroke=isP1?'#ffd1d1':'#d8efff';
+      g.appendChild(svgEl('circle',{
+        cx:p.x,cy:p.y,r,fill,stroke,'stroke-width':2,opacity
+      }));
+    }
+  }
+
   function renderBoard(){
     boardSvg.innerHTML='';
     const m=boardMetrics();
     boardSvg.setAttribute('viewBox',`0 0 ${m.w} ${m.h}`);
     const s=current.state;
     const activeFrom = s.setupStep===2 && !s.winner ? (s.turn===1?s.p1:s.p2) : null;
-    const legal = new Set(activeFrom ? availableNeighbors(s,activeFrom) : []);
+    const legalMoves = activeFrom
+      ? (latticeMoves.get(activeFrom)||[]).filter(move=>!s.removed.has(move.eid))
+      : [];
+    const legal = new Set(legalMoves.map(move=>move.id));
     const activeColor = s.turn===1 ? '#ff6b6b' : '#4dabf7';
-    const activeVertex = activeFrom ? vertexMap.get(activeFrom) : null;
     const tiles=displayTiles();
 
-    // Board regions first: a true regular-hexagon tiling. The center board is
-    // emphasized; ring 1 alternates the other two classes; ring 2 fades away.
+    // Hex regions: corners are radial outgoing-edge midpoints. Because these
+    // are smaller than the quotient fundamental cells, small triangular gaps
+    // are intentionally left between neighboring boards.
     for(const tile of tiles){
       const style=tileFill(tile);
       boardSvg.appendChild(svgEl('polygon',{
@@ -540,20 +565,19 @@
         opacity:style.opacity,
         stroke:style.stroke,
         'stroke-opacity':style.strokeOpacity,
-        'stroke-width':tile.ring===0?2:1.2,
+        'stroke-width':tile.ring===0?2:1.1,
         'stroke-linejoin':'round'
       }));
     }
 
-    // Draw lattice edges in each visible tile copy. Wrap edges are short normal
-    // lattice edges, so the periodic connection reads naturally across a boundary.
+    // Base lattice edges in every visible board copy.
     const edgeDraws=[];
     for(const tile of tiles){
-      for(const [eid,[a,b]] of baseEdges){
+      for(const [eid] of baseEdges){
         const geom=edgeGeometry.get(eid);
         if(!geom) continue;
         edgeDraws.push({
-          tile,eid,a,b,
+          tile,eid,
           q1:geom.q1+tile.q,r1:geom.r1+tile.r,
           q2:geom.q2+tile.q,r2:geom.r2+tile.r
         });
@@ -564,73 +588,103 @@
     for(const d of edgeDraws){
       const p1=coordToXYRaw(d.q1,d.r1,m), p2=coordToXYRaw(d.q2,d.r2,m);
       const removed=s.removed.has(d.eid);
-      const hot=!removed && activeFrom && d.tile.ring===0 && (d.a===activeFrom || d.b===activeFrom);
-      const ringOpacity=d.tile.ring===0?0.88:(d.tile.ring===1?0.24:0.10);
+      const ringOpacity=d.tile.ring===0?0.88:(d.tile.ring===1?0.22:0.08);
       boardSvg.appendChild(svgEl('line',{
         x1:p1.x,y1:p1.y,x2:p2.x,y2:p2.y,
-        stroke:removed?'#252a36':(hot?activeColor:'#617089'),
-        'stroke-width':hot?4:(d.tile.ring===0?2:1.4),
+        stroke:removed?'#252a36':'#617089',
+        'stroke-width':d.tile.ring===0?2:1.35,
         'stroke-linecap':'round',
         opacity:removed?ringOpacity*0.12:ringOpacity
       }));
     }
 
-    // Ghost vertices. Only the geometrically adjacent representation of a legal
-    // wrap move is clickable; all others are visual context.
-    for(const tile of tiles.filter(t=>t.ghost)){
-      for(const v of vertices){
-        const q=v.q+tile.q, r=v.r+tile.r;
-        const p=coordToXYRaw(q,r,m);
-        let ghostLegal=false;
-        if(tile.ring===1 && activeVertex && legal.has(v.id)){
-          const dq=q-activeVertex.q, dr=r-activeVertex.r;
-          ghostLegal=dirs.some(([x,y])=>x===dq&&y===dr);
+    // Active legal edges are overlaid from the actual token position in EVERY
+    // displayed copy. This includes wrap edges on all six boundaries.
+    if(activeFrom){
+      const av=vertexMap.get(activeFrom);
+      for(const tile of tiles){
+        const opacity=tile.ring===0?1:(tile.ring===1?0.52:0.20);
+        for(const move of legalMoves){
+          const p1=coordToXYRaw(av.q+tile.q,av.r+tile.r,m);
+          const p2=coordToXYRaw(av.q+move.dq+tile.q,av.r+move.dr+tile.r,m);
+          boardSvg.appendChild(svgEl('line',{
+            x1:p1.x,y1:p1.y,x2:p2.x,y2:p2.y,
+            stroke:activeColor,
+            'stroke-width':tile.ring===0?4:2.5,
+            'stroke-linecap':'round',
+            opacity
+          }));
         }
-        const g=svgEl('g',{style:ghostLegal?'cursor:pointer':'pointer-events:none'});
-        const baseR=Math.max(2.2,Math.min(5.5,m.spacing*.11));
-        g.appendChild(svgEl('circle',{
-          cx:p.x,cy:p.y,r:ghostLegal?baseR*1.35:baseR,
-          fill:ghostLegal?'#27365d':'#141b28',
-          stroke:ghostLegal?activeColor:'#6b7890',
-          'stroke-width':ghostLegal?2:1,
-          opacity:ghostLegal?0.95:(tile.ring===1?0.30:0.12)
-        }));
-        if(ghostLegal) g.addEventListener('click',()=>handleVertexClick(v.id));
+      }
+    }
+
+    // Vertices, token copies, and move candidates on all boards.
+    // The center board is fully emphasized; ghost copies are progressively muted.
+    for(const tile of tiles){
+      const ringOpacity=tile.ring===0?1:(tile.ring===1?0.42:0.15);
+      for(const v of vertices){
+        const p=coordToXYRaw(v.q+tile.q,v.r+tile.r,m);
+        const isP1=s.p1===v.id, isP2=s.p2===v.id;
+        const isLegal=legal.has(v.id);
+
+        let r=Math.max(3.5,Math.min(9,m.spacing*.14));
+        if(isP1||isP2) r*=1.25;
+        else if(isLegal) r*=1.12;
+
+        const g=svgEl('g',{
+          style:tile.ring===0?'cursor:pointer':'pointer-events:none'
+        });
+
+        if(tile.ring===0){
+          g.appendChild(svgEl('circle',{
+            cx:p.x,cy:p.y,r:Math.max(12,r*1.75),fill:'transparent'
+          }));
+        }
+
+        if(isP1||isP2){
+          renderTokenAt(
+            g,p,r,isP1,isP2,
+            tile.ring===0?1:(tile.ring===1?0.52:0.22),
+            tile.ring===0?1:(tile.ring===1?0.48:0.20)
+          );
+        }else{
+          g.appendChild(svgEl('circle',{
+            cx:p.x,cy:p.y,r,
+            fill:isLegal?'#27365d':'#172033',
+            stroke:isLegal?activeColor:'#6b7890',
+            'stroke-width':isLegal?2:1.5,
+            opacity:isLegal
+              ? (tile.ring===0?1:(tile.ring===1?0.58:0.22))
+              : ringOpacity
+          }));
+        }
+
+        if(tile.ring===0) g.addEventListener('click',()=>handleVertexClick(v.id));
         boardSvg.appendChild(g);
       }
     }
 
-    // The central board remains the only directly playable fundamental domain.
-    for(const v of vertices){
-      const p=coordToXY(v,m);
-      let fill='#172033', stroke='#6b7890', r=Math.max(5,Math.min(10,m.spacing*.15));
-      const isP1=s.p1===v.id, isP2=s.p2===v.id;
-      if(isP1||isP2) r*=1.25;
-      else if(legal.has(v.id)){fill='#27365d';stroke=activeColor;r*=1.12}
-
-      const g=svgEl('g',{style:'cursor:pointer'});
-      const hit=svgEl('circle',{cx:p.x,cy:p.y,r:Math.max(13,r*1.8),fill:'transparent'});
-      g.appendChild(hit);
-
-      if(isP1&&isP2){
-        const left=svgEl('path',{
-          d:`M ${p.x} ${p.y-r} A ${r} ${r} 0 0 0 ${p.x} ${p.y+r} L ${p.x} ${p.y-r} Z`,
-          fill:'#ff6b6b'
-        });
-        const right=svgEl('path',{
-          d:`M ${p.x} ${p.y-r} A ${r} ${r} 0 0 1 ${p.x} ${p.y+r} L ${p.x} ${p.y-r} Z`,
-          fill:'#4dabf7'
-        });
-        const outline=svgEl('circle',{cx:p.x,cy:p.y,r,fill:'none',stroke:'#ffffff','stroke-width':2});
-        g.appendChild(left); g.appendChild(right); g.appendChild(outline);
-      } else {
-        if(isP1){fill='#ff6b6b';stroke='#ffd1d1'}
-        else if(isP2){fill='#4dabf7';stroke='#d8efff'}
-        g.appendChild(svgEl('circle',{cx:p.x,cy:p.y,r,fill,stroke,'stroke-width':2}));
+    // Wrap move candidates that geometrically land in another displayed copy
+    // are also clickable there, so the highlighted edge and its endpoint act
+    // as one coherent candidate.
+    if(activeFrom && topology==='periodic'){
+      const av=vertexMap.get(activeFrom);
+      for(const move of legalMoves){
+        const nq=av.q+move.dq, nr=av.r+move.dr;
+        if(vertexMap.has(key(nq,nr))) continue;
+        const p=coordToXYRaw(nq,nr,m);
+        const rr=Math.max(6,Math.min(10,m.spacing*.16));
+        const g=svgEl('g',{style:'cursor:pointer'});
+        g.appendChild(svgEl('circle',{
+          cx:p.x,cy:p.y,r:Math.max(13,rr*1.6),fill:'transparent'
+        }));
+        g.appendChild(svgEl('circle',{
+          cx:p.x,cy:p.y,r:rr,fill:'#27365d',stroke:activeColor,
+          'stroke-width':2.5,opacity:1
+        }));
+        g.addEventListener('click',()=>handleVertexClick(move.id));
+        boardSvg.appendChild(g);
       }
-
-      g.addEventListener('click',()=>handleVertexClick(v.id));
-      boardSvg.appendChild(g);
     }
   }
 
