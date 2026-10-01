@@ -571,16 +571,31 @@
     }
 
     // Base lattice edges in every visible board copy.
+    // IMPORTANT: draw from every directed lattice step, not from a single
+    // representative of each torus edge. A wrap edge has TWO visible boundary
+    // representations in one fundamental hex (one on each identified side).
+    // Using only edgeGeometry showed one side at full strength and made the
+    // opposite side look like it belonged only to a ghost tile.
     const edgeDraws=[];
     for(const tile of tiles){
-      for(const [eid] of baseEdges){
-        const geom=edgeGeometry.get(eid);
-        if(!geom) continue;
-        edgeDraws.push({
-          tile,eid,
-          q1:geom.q1+tile.q,r1:geom.r1+tile.r,
-          q2:geom.q2+tile.q,r2:geom.r2+tile.r
-        });
+      const seenSegments=new Set();
+      for(const v of vertices){
+        for(const move of (latticeMoves.get(v.id)||[])){
+          const q1=v.q+tile.q, r1=v.r+tile.r;
+          const q2=v.q+move.dq+tile.q, r2=v.r+move.dr+tile.r;
+
+          // Deduplicate the same geometric segment inside a tile while keeping
+          // distinct wrap representations of the same abstract edge.
+          const a=`${q1},${r1}`, b=`${q2},${r2}`;
+          const segmentKey=a<b?`${a}|${b}`:`${b}|${a}`;
+          if(seenSegments.has(segmentKey)) continue;
+          seenSegments.add(segmentKey);
+
+          edgeDraws.push({
+            tile,eid:move.eid,
+            q1,r1,q2,r2
+          });
+        }
       }
     }
     edgeDraws.sort((x,y)=>y.tile.ring-x.tile.ring);
