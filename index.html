@@ -1,0 +1,489 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Hex Edge Geography</title>
+<style>
+  :root{
+    color-scheme: dark;
+    --bg:#0b0d12;
+    --panel:#121622;
+    --panel2:#171c29;
+    --text:#eef2ff;
+    --muted:#98a2b3;
+    --line:#3c465a;
+    --line-hot:#d9e1ff;
+    --p1:#ff6b6b;
+    --p2:#4dabf7;
+    --accent:#c7d2fe;
+    --good:#51cf66;
+    --warn:#ffd43b;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  .app{max-width:1180px;margin:0 auto;padding:18px}
+  .topbar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+  h1{font-size:20px;margin:0 14px 0 0}
+  .control{display:flex;align-items:center;gap:8px;background:var(--panel);border:1px solid #232a3a;border-radius:12px;padding:8px 10px}
+  input[type=number]{width:64px;background:#0f1320;color:var(--text);border:1px solid #354057;border-radius:8px;padding:6px}
+  button{background:#1d2433;color:var(--text);border:1px solid #39445b;border-radius:9px;padding:7px 11px;cursor:pointer}
+  button:hover:not(:disabled){background:#273044}
+  button:disabled{opacity:.4;cursor:not-allowed}
+  .primary{background:#26365d;border-color:#425f99}
+  .danger{background:#3a2024;border-color:#6b343c}
+  .status{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:10px 0 12px}
+  .pill{padding:7px 10px;border-radius:999px;background:var(--panel);border:1px solid #263047}
+  .p1{color:var(--p1)} .p2{color:var(--p2)}
+  .layout{display:grid;grid-template-columns:minmax(0,1fr) 270px;gap:14px}
+  .boardCard,.sideCard,.treeCard{background:var(--panel);border:1px solid #232a3a;border-radius:14px;overflow:hidden}
+  .boardWrap{position:relative;min-height:620px;background:radial-gradient(circle at 50% 44%,#171c28 0,#0f131d 58%,#0b0e15 100%)}
+  #board{display:block;width:100%;height:620px;touch-action:none}
+  .sideCard{padding:14px}
+  .sideCard h2,.treeCard h2{font-size:15px;margin:0 0 10px}
+  .legend{display:grid;gap:8px;color:var(--muted)}
+  .legend strong{color:var(--text)}
+  .kbd{display:inline-block;padding:1px 6px;border:1px solid #3a455c;border-bottom-width:2px;border-radius:6px;background:#171d2b;color:#d7def0;font-size:12px}
+  .treeCard{margin-top:14px;padding:12px}
+  .treeViewport{width:100%;overflow:auto;background:#0e121b;border-radius:10px}
+  #tree{display:block;min-width:100%;height:310px;background:#0e121b}
+  .small{font-size:12px;color:var(--muted)}
+  .moveList{margin-top:12px;max-height:240px;overflow:auto;border-top:1px solid #263047;padding-top:8px}
+  .moveRow{padding:5px 7px;border-radius:7px;color:#c8d0e0;cursor:pointer}
+  .moveRow:hover{background:#1c2332}.moveRow.current{background:#25314d;color:white}
+  .nodeLabel{font-size:11px;fill:#cdd5e7;pointer-events:none}
+  @media(max-width:900px){.layout{grid-template-columns:1fr}.boardWrap,#board{height:560px}.sideCard{order:2}}
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="topbar">
+    <h1>Hex Edge Geography</h1>
+    <div class="control">
+      <label for="diameter">지름</label>
+      <input id="diameter" type="number" min="1" max="16" step="1" value="8" />
+      <button id="applyRadius" class="primary">적용</button>
+    </div>
+    <div class="control">
+      <button id="backBtn">← 이전 턴</button>
+      <button id="forwardBtn">다음 턴 →</button>
+    </div>
+    <button id="resetBtn" class="danger">리셋</button>
+  </div>
+
+  <div class="status">
+    <div id="phasePill" class="pill">시작 위치 선택 중</div>
+    <div id="turnPill" class="pill">P1 시작 vertex를 선택</div>
+    <div id="branchPill" class="pill">Branch 0</div>
+  </div>
+
+  <div class="layout">
+    <section class="boardCard">
+      <div class="boardWrap"><svg id="board" aria-label="game board"></svg></div>
+    </section>
+    <aside class="sideCard">
+      <h2>규칙</h2>
+      <div class="legend">
+        <div><strong>1.</strong> P1, P2가 시작 vertex를 하나씩 선택.</div>
+        <div><strong>2.</strong> 자기 턴에 현재 vertex와 edge로 연결된 이웃 vertex를 클릭.</div>
+        <div><strong>3.</strong> 이동에 사용한 edge는 즉시 삭제.</div>
+        <div><strong>4.</strong> 상대가 있는 vertex로도 이동할 수 있으며, 별도 승리 판정은 하지 않음.</div>
+        <div><strong>5.</strong> 자기 턴에 이동 가능한 edge가 하나도 없으면 패배.</div>
+      </div>
+      <div style="height:12px"></div>
+      <h2>분기</h2>
+      <div class="small">과거 턴으로 돌아간 뒤 다른 수를 두면 기존 진행은 유지되고 새 분기가 생긴다. 아래 트리의 점을 클릭하면 그 상태로 바로 이동한다.</div>
+      <div class="moveList" id="moveList"></div>
+    </aside>
+  </div>
+
+  <section class="treeCard">
+    <h2>Game tree</h2>
+    <div class="treeViewport"><svg id="tree" aria-label="branching game tree"></svg></div>
+  </section>
+</div>
+
+<script>
+(() => {
+  const NS = 'http://www.w3.org/2000/svg';
+  const boardSvg = document.getElementById('board');
+  const treeSvg = document.getElementById('tree');
+  const diameterInput = document.getElementById('diameter');
+  const phasePill = document.getElementById('phasePill');
+  const turnPill = document.getElementById('turnPill');
+  const branchPill = document.getElementById('branchPill');
+  const backBtn = document.getElementById('backBtn');
+  const forwardBtn = document.getElementById('forwardBtn');
+  const resetBtn = document.getElementById('resetBtn');
+  const applyRadius = document.getElementById('applyRadius');
+  const moveList = document.getElementById('moveList');
+
+  let D = 8;
+  let vertices = [];
+  let vertexMap = new Map();
+  let baseEdges = new Map();
+  let nodeCounter = 0;
+  let root = null;
+  let current = null;
+  let preferredChild = new Map();
+
+  const dirs = [[1,0],[1,-1],[0,-1],[-1,0],[-1,1],[0,1]];
+  const key = (q,r) => `${q},${r}`;
+  const edgeKey = (a,b) => a < b ? `${a}|${b}` : `${b}|${a}`;
+
+  function makeHexGraph(diameter){
+    vertices = [];
+    vertexMap = new Map();
+    baseEdges = new Map();
+
+    const rad = diameter / 2;
+    const odd = diameter % 2 === 1;
+    const cx = odd ? 0.5 : 0;
+    const cy = odd ? -0.5 : 0;
+    const cz = 0;
+    const bound = Math.ceil(rad) + 1;
+
+    for(let q=-bound;q<=bound;q++){
+      for(let r=-bound;r<=bound;r++){
+        const x=q, y=-q-r, z=r;
+        const dist=Math.max(Math.abs(x-cx),Math.abs(y-cy),Math.abs(z-cz));
+        if(dist <= rad + 1e-9){
+          const id=key(q,r);
+          const v={id,q,r};
+          vertices.push(v); vertexMap.set(id,v);
+        }
+      }
+    }
+    for(const v of vertices){
+      for(const [dq,dr] of dirs){
+        const n=key(v.q+dq,v.r+dr);
+        if(vertexMap.has(n)){
+          const e=edgeKey(v.id,n);
+          if(!baseEdges.has(e)) baseEdges.set(e,[v.id,n]);
+        }
+      }
+    }
+  }
+
+  function newState(){
+    return {
+      setupStep: 0,
+      p1: null,
+      p2: null,
+      turn: 1,
+      removed: new Set(),
+      winner: null,
+      reason: null
+    };
+  }
+
+  function cloneState(s){
+    return {...s, removed:new Set(s.removed)};
+  }
+
+  function makeNode(state,parent=null,move=null){
+    return {id:nodeCounter++,state,parent,move,children:[]};
+  }
+
+  function resetGame(){
+    D = Math.max(1, Math.min(16, parseInt(diameterInput.value,10)||8));
+    diameterInput.value = D;
+    makeHexGraph(D);
+    nodeCounter = 0;
+    preferredChild.clear();
+    root = makeNode(newState());
+    current = root;
+    renderAll();
+  }
+
+  function availableNeighbors(state, vertexId){
+    if(!vertexId) return [];
+    const out=[];
+    const v=vertexMap.get(vertexId);
+    if(!v) return out;
+    for(const [dq,dr] of dirs){
+      const n=key(v.q+dq,v.r+dr);
+      if(vertexMap.has(n)){
+        const e=edgeKey(vertexId,n);
+        if(baseEdges.has(e) && !state.removed.has(e)) out.push(n);
+      }
+    }
+    return out;
+  }
+
+  function maybeFinalizeNoMove(state){
+    if(state.setupStep!==2 || state.winner) return;
+    const pos = state.turn===1 ? state.p1 : state.p2;
+    if(availableNeighbors(state,pos).length===0){
+      state.winner = state.turn===1 ? 2 : 1;
+      state.reason = `P${state.turn}가 이동할 수 없음`;
+    }
+  }
+
+  function handleVertexClick(id){
+    const s=current.state;
+    if(s.winner) return;
+
+    if(s.setupStep===0){
+      const ns=cloneState(s); ns.p1=id; ns.setupStep=1;
+      addOrVisitChild(ns,{type:'setup',player:1,to:id,label:`P1 start ${id}`});
+      return;
+    }
+    if(s.setupStep===1){
+      if(id===s.p1) return;
+      const ns=cloneState(s); ns.p2=id; ns.setupStep=2; ns.turn=1;
+      maybeFinalizeNoMove(ns);
+      addOrVisitChild(ns,{type:'setup',player:2,to:id,label:`P2 start ${id}`});
+      return;
+    }
+
+    const player=s.turn;
+    const from=player===1?s.p1:s.p2;
+    if(!availableNeighbors(s,from).includes(id)) return;
+
+    const ns=cloneState(s);
+    ns.removed.add(edgeKey(from,id));
+    if(player===1) ns.p1=id; else ns.p2=id;
+
+    ns.turn = player===1 ? 2 : 1;
+    maybeFinalizeNoMove(ns);
+    addOrVisitChild(ns,{type:'move',player,from,to:id,label:`P${player}: ${from} → ${id}`});
+  }
+
+  function statesEquivalent(a,b){
+    if(a.setupStep!==b.setupStep||a.p1!==b.p1||a.p2!==b.p2||a.turn!==b.turn||a.winner!==b.winner) return false;
+    if(a.removed.size!==b.removed.size) return false;
+    for(const e of a.removed) if(!b.removed.has(e)) return false;
+    return true;
+  }
+
+  function addOrVisitChild(state,move){
+    let child=current.children.find(c=>statesEquivalent(c.state,state));
+    if(!child){
+      child=makeNode(state,current,move);
+      current.children.push(child);
+    }
+    preferredChild.set(current.id,child.id);
+    current=child;
+    renderAll();
+  }
+
+  function goBack(){
+    if(current.parent){ preferredChild.set(current.parent.id,current.id); current=current.parent; renderAll(); }
+  }
+  function goForward(){
+    if(!current.children.length) return;
+    const pref=preferredChild.get(current.id);
+    current=current.children.find(c=>c.id===pref)||current.children[0];
+    renderAll();
+  }
+
+  function boardMetrics(){
+    const rect=boardSvg.getBoundingClientRect();
+    const w=Math.max(300,rect.width), h=Math.max(420,rect.height);
+    const pad=34;
+    const raw=vertices.map(v=>({
+      x:Math.sqrt(3)*(v.q+v.r/2),
+      y:1.5*v.r
+    }));
+    const minX=Math.min(...raw.map(p=>p.x)), maxX=Math.max(...raw.map(p=>p.x));
+    const minY=Math.min(...raw.map(p=>p.y)), maxY=Math.max(...raw.map(p=>p.y));
+    const spanX=Math.max(1,maxX-minX), spanY=Math.max(1,maxY-minY);
+    const spacing=Math.min((w-2*pad)/spanX,(h-2*pad)/spanY);
+    return {w,h,spacing,pad,minX,maxX,minY,maxY};
+  }
+
+  function coordToXY(v,m){
+    const rx=Math.sqrt(3)*(v.q+v.r/2);
+    const ry=1.5*v.r;
+    const x=m.pad+(rx-m.minX)*m.spacing;
+    const y=m.pad+(ry-m.minY)*m.spacing;
+    return {x,y};
+  }
+
+  function svgEl(tag,attrs={}){
+    const el=document.createElementNS(NS,tag);
+    for(const [k,v] of Object.entries(attrs)) el.setAttribute(k,v);
+    return el;
+  }
+
+  function renderBoard(){
+    boardSvg.innerHTML='';
+    const m=boardMetrics();
+    boardSvg.setAttribute('viewBox',`0 0 ${m.w} ${m.h}`);
+    const s=current.state;
+    const activeFrom = s.setupStep===2 && !s.winner ? (s.turn===1?s.p1:s.p2) : null;
+    const legal = new Set(activeFrom ? availableNeighbors(s,activeFrom) : []);
+    const activeColor = s.turn===1 ? '#ff6b6b' : '#4dabf7';
+
+    for(const [eid,[a,b]] of baseEdges){
+      const va=vertexMap.get(a), vb=vertexMap.get(b);
+      const pa=coordToXY(va,m), pb=coordToXY(vb,m);
+      const removed=s.removed.has(eid);
+      const hot = !removed && activeFrom && ((a===activeFrom&&legal.has(b))||(b===activeFrom&&legal.has(a)));
+      const line=svgEl('line',{
+        x1:pa.x,y1:pa.y,x2:pb.x,y2:pb.y,
+        stroke: removed?'#252a36':(hot?activeColor:'#4a556b'),
+        'stroke-width': hot?4:2,
+        'stroke-linecap':'round',
+        opacity: removed?0.13:0.9
+      });
+      boardSvg.appendChild(line);
+    }
+
+    for(const v of vertices){
+      const p=coordToXY(v,m);
+      let fill='#172033', stroke='#6b7890', r=Math.max(5,Math.min(10,m.spacing*.15));
+      const isP1=s.p1===v.id, isP2=s.p2===v.id;
+      if(isP1||isP2) r*=1.25;
+      else if(legal.has(v.id)){fill='#27365d';stroke=activeColor;r*=1.12}
+
+      const g=svgEl('g',{style:'cursor:pointer'});
+      const hit=svgEl('circle',{cx:p.x,cy:p.y,r:Math.max(13,r*1.8),fill:'transparent'});
+      g.appendChild(hit);
+
+      if(isP1&&isP2){
+        const left=svgEl('path',{
+          d:`M ${p.x} ${p.y-r} A ${r} ${r} 0 0 0 ${p.x} ${p.y+r} L ${p.x} ${p.y-r} Z`,
+          fill:'#ff6b6b'
+        });
+        const right=svgEl('path',{
+          d:`M ${p.x} ${p.y-r} A ${r} ${r} 0 0 1 ${p.x} ${p.y+r} L ${p.x} ${p.y-r} Z`,
+          fill:'#4dabf7'
+        });
+        const outline=svgEl('circle',{cx:p.x,cy:p.y,r,fill:'none',stroke:'#ffffff','stroke-width':2});
+        g.appendChild(left); g.appendChild(right); g.appendChild(outline);
+      } else {
+        if(isP1){fill='#ff6b6b';stroke='#ffd1d1'}
+        else if(isP2){fill='#4dabf7';stroke='#d8efff'}
+        const c=svgEl('circle',{cx:p.x,cy:p.y,r,fill,stroke,'stroke-width':2});
+        g.appendChild(c);
+      }
+
+      g.addEventListener('click',()=>handleVertexClick(v.id));
+      boardSvg.appendChild(g);
+    }
+  }
+
+  function renderStatus(){
+    const s=current.state;
+    if(s.winner){
+      phasePill.textContent='게임 종료';
+      turnPill.innerHTML=`<strong class="p${s.winner}">P${s.winner} 승리</strong> · ${s.reason}`;
+    } else if(s.setupStep===0){
+      phasePill.textContent='시작 위치 선택';
+      turnPill.innerHTML='<span class="p1">P1</span> 시작 vertex를 선택';
+    } else if(s.setupStep===1){
+      phasePill.textContent='시작 위치 선택';
+      turnPill.innerHTML='<span class="p2">P2</span> 시작 vertex를 선택';
+    } else {
+      phasePill.textContent='진행 중';
+      turnPill.innerHTML=`<strong class="p${s.turn}">P${s.turn} 턴</strong> · 이동 가능한 이웃 ${availableNeighbors(s,s.turn===1?s.p1:s.p2).length}개`;
+    }
+    branchPill.textContent=`현재 상태 · 다음 분기 ${current.children.length}개`;
+    backBtn.disabled=!current.parent;
+    forwardBtn.disabled=!current.children.length;
+  }
+
+  function collectAllNodes(){
+    const all=[];
+    const q=[root];
+    while(q.length){
+      const n=q.shift();
+      all.push(n);
+      q.push(...n.children);
+    }
+    return all;
+  }
+
+  function treeLayout(){
+    const pos=new Map();
+    let nextLane=1;
+    const colGap=50, rowGap=46, left=28, top=28;
+
+    function place(node,depth,lane){
+      pos.set(node.id,{x:left+depth*colGap,y:top+lane*rowGap});
+      if(!node.children.length) return;
+      place(node.children[0],depth+1,lane);
+      for(let i=1;i<node.children.length;i++){
+        const branchLane=nextLane++;
+        place(node.children[i],depth+1,branchLane);
+      }
+    }
+    place(root,0,0);
+    return {pos,lanes:Math.max(1,nextLane),colGap,rowGap,left,top};
+  }
+
+  function renderTree(){
+    treeSvg.innerHTML='';
+    const all=collectAllNodes();
+    const layout=treeLayout();
+    const {pos,lanes,colGap,rowGap,left,top}=layout;
+    const maxDepth=all.reduce((m,n)=>{
+      let d=0,p=n; while(p.parent){d++;p=p.parent;} return Math.max(m,d);
+    },0);
+    const viewportW=treeSvg.parentElement?.clientWidth||900;
+    const width=Math.max(viewportW, left*2 + maxDepth*colGap + 50);
+    const height=Math.max(170, top*2 + (lanes-1)*rowGap + 50);
+    treeSvg.setAttribute('viewBox',`0 0 ${width} ${height}`);
+    treeSvg.setAttribute('width',width);
+    treeSvg.setAttribute('height',height);
+    treeSvg.style.width=`${width}px`;
+    treeSvg.style.height=`${height}px`;
+
+    for(const n of all){
+      if(!n.parent) continue;
+      const a=pos.get(n.parent.id), b=pos.get(n.id);
+      const path=svgEl('line',{
+        x1:a.x,y1:a.y,x2:b.x,y2:b.y,
+        stroke:'#45516a','stroke-width':2,'stroke-linecap':'round'
+      });
+      treeSvg.appendChild(path);
+    }
+
+    for(const n of all){
+      const p=pos.get(n.id);
+      const isCur=n===current;
+      let fill='#222b3d', stroke='#71809b';
+      if(n.state.winner){fill=n.state.winner===1?'#6a2e34':'#245476';stroke='#e7ecff'}
+      else if(isCur){fill='#495b8c';stroke='#ffffff'}
+      const g=svgEl('g',{style:'cursor:pointer'});
+      g.appendChild(svgEl('circle',{cx:p.x,cy:p.y,r:isCur?9:7,fill,stroke,'stroke-width':2}));
+      g.addEventListener('click',()=>{if(n.parent) preferredChild.set(n.parent.id,n.id);current=n;renderAll();});
+      treeSvg.appendChild(g);
+    }
+  }
+
+  function currentPath(){
+    const a=[]; let n=current; while(n){a.push(n);n=n.parent} return a.reverse();
+  }
+
+  function renderMoveList(){
+    moveList.innerHTML='';
+    const path=currentPath();
+    for(const n of path){
+      const div=document.createElement('div');
+      div.className='moveRow'+(n===current?' current':'');
+      div.textContent=n===root?'초기 상태':n.move.label;
+      div.addEventListener('click',()=>{current=n;renderAll()});
+      moveList.appendChild(div);
+    }
+  }
+
+  function renderAll(){ renderStatus(); renderBoard(); renderTree(); renderMoveList(); }
+
+  backBtn.addEventListener('click',goBack);
+  forwardBtn.addEventListener('click',goForward);
+  resetBtn.addEventListener('click',resetGame);
+  applyRadius.addEventListener('click',resetGame);
+  window.addEventListener('resize',()=>{renderBoard();renderTree()});
+  document.addEventListener('keydown',(e)=>{
+    if(e.key==='ArrowLeft') goBack();
+    if(e.key==='ArrowRight') goForward();
+  });
+
+  resetGame();
+})();
+</script>
+</body>
+</html>
